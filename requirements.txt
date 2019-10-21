@@ -1,3 +1,11 @@
-tensorflow==1.14.0
+requests
+Pillow
+facenet_pytorch
+scikit-optimize
+numpy
+pandas
+tqdm
 opencv-python
-sklearn
+scikit-learn
+torch
+torchvision

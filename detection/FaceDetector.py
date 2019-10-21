@@ -1,55 +1,65 @@
-import os
-import time
+import cv2
+# from mtcnn.mtcnn import MTCNN
 import numpy as np
-import tensorflow as tf
+import torch
+from PIL import Image
+from facenet_pytorch.models.mtcnn import MTCNN, prewhiten
+from torch.backends import cudnn
+from torchvision.transforms import functional
 
-BASE_DIR = os.path.dirname(__file__) + '/'
+input_image_size = 160
 
-# Path to frozen detection graph. This is the actual model that is used for the object detection.
-PATH_TO_CKPT = 'model/frozen_inference_graph_face.pb'
-
-# List of the strings that is used to add correct label for each box.
-PATH_TO_LABELS = 'protos/face_label_map.pbtxt'
 
 class FaceDetector:
     def __init__(self):
-        # Load models
-        self.detection_graph = tf.Graph()
-        self.sess = tf.Session(graph=self.detection_graph)
-        with self.detection_graph.as_default():
-            od_graph_def = tf.GraphDef()
-            with tf.gfile.GFile(BASE_DIR + PATH_TO_CKPT, 'rb') as fid:
-                serialized_graph = fid.read()
-                od_graph_def.ParseFromString(serialized_graph)
-                tf.import_graph_def(od_graph_def, name='')
+        torch.set_grad_enabled(False)
+        cudnn.benchmark = True
+        self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        self.mtcnn = MTCNN(
+            image_size=input_image_size, min_face_size=30, prewhiten=True, select_largest=True,
+            device=self.device
+        )
+        # self.detector = MTCNN()
 
-        self.image_tensor = self.detection_graph.get_tensor_by_name('image_tensor:0')
-        # Each box represents a part of the image where a particular object was detected.
-        self.boxes = self.detection_graph.get_tensor_by_name('detection_boxes:0')
-        # Each score represent how level of confidence for each of the objects.
-        # Score is shown on the result image, together with the class label.
-        self.scores = self.detection_graph.get_tensor_by_name('detection_scores:0')
-        self.classes = self.detection_graph.get_tensor_by_name('detection_classes:0')
-        self.num_detections = self.detection_graph.get_tensor_by_name('num_detections:0')
-
-    def __del__(self):
-        self.sess.close()
+    def pre_process(self, image):
+        """
+        Redimensiona e preprocessa imagem para extracao de features
+        :param image: imagem do cv2
+        :return: img_tensor pre-processado para extracao de features
+        """
+        try:
+            image = cv2.resize(image, (input_image_size, input_image_size), interpolation=cv2.INTER_AREA)
+        except cv2.error:
+            return None
+        img_tensor = functional.to_tensor(np.float32(image)).to(self.device)
+        return prewhiten(img_tensor)
+        # face = F.to_tensor(np.float32(face))
 
     def detect(self, image):
-        # the array based representation of the image will be used later in order to prepare the
-        # result image with boxes and labels on it.
-        # Expand dimensions since the model expects images to have shape: [1, None, None, 3]
-        image_expanded = np.expand_dims(image, axis=0)
+        """
+        Realiza deteccao facial e retorna boxes/scores detectados
+        :rtype: numpy.ndarray ou None caso nao nenhuma face seja detectada
+        :param image: imagem (do Pil ou do cv2) para a deteccao
+        :return: arrays boxes com localizacoes das faces e scores, com a probabilidade de presenca de face
+        """
+        if type(image) == np.ndarray:
+            image = Image.fromarray(image)
 
-        # Actual detection.
-        start_time = time.time()
-        (boxes, scores, classes, num_detections) = self.sess.run(
-            [self.boxes, self.scores, self.classes, self.num_detections],
-            feed_dict={self.image_tensor: image_expanded})
-        elapsed_time = time.time() - start_time
-        print('inference time cost: {}'.format(elapsed_time))
+        boxes, scores = self.mtcnn.detect(image)
+        if boxes is not None:
+            boxes = np.rint(boxes).astype(int)
 
-        # Ratio to real position
-        boxes[0, :, [0, 2]] = (boxes[0, :, [0, 2]]*image.shape[0])
-        boxes[0, :, [1, 3]] = (boxes[0, :, [1, 3]]*image.shape[1])
-        return np.squeeze(boxes).astype(int), np.squeeze(scores)
+        return boxes, scores
+
+    def extract_face(self, image, save_path=None):
+        """
+        Realiza deteccao facial, extrai a imagem da maior face, e pre-processa a imagem para extracao de features
+        :rtype: torch.tensor
+        :param image: imagem {PIL.Image ou numpy.ndarray do cv2} para a deteccao
+        :param save_path: um caminho para salvar a face detectada (opcional)
+        :return: imagem da face pre-processada
+        """
+        if type(image) == np.ndarray:
+            image = Image.fromarray(image)
+
+        return self.mtcnn(image, save_path=save_path, return_prob=True)
